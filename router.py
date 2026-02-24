@@ -1,37 +1,34 @@
 """
 router.py - Roteador Virtual (Fase 3)
-Responsável por: Encaminhar pacotes com base no endereço virtual de destino (VIP).
-Camada de Rede: lê dst_vip, consulta tabela e redireciona.
+Possui tabela ARP dinâmica: aprende o endereço real dos clientes ao receber pacotes.
 """
 
 import socket
 import json
 from protocol import Quadro, Pacote, Segmento, enviar_pela_rede_ruidosa
 
-# ===================== CONFIGURAÇÃO DO ROTEADOR =====================
 ROUTER_IP   = "127.0.0.1"
 ROUTER_PORT = 6000
 
-# Tabela de roteamento estática:  VIP  ->  (IP real, Porta real)
+# Tabela estática: só o servidor precisa estar aqui
 TABELA_ROTEAMENTO = {
     "SERVIDOR": ("127.0.0.1", 5000),
-    "HOST_A":   ("127.0.0.1", 7000),   # reservado para futuros clientes
 }
 
-# ====================================================================
+# Tabela ARP dinâmica: aprende clientes em tempo real
+tabela_arp = {}
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.bind((ROUTER_IP, ROUTER_PORT))
 
 print(f"\033[94m[ROTEADOR] Escutando em {ROUTER_IP}:{ROUTER_PORT}\033[0m")
-print(f"\033[94m[ROTEADOR] Tabela de roteamento: {TABELA_ROTEAMENTO}\033[0m\n")
+print(f"\033[94m[ROTEADOR] Tabela estática: {TABELA_ROTEAMENTO}\033[0m\n")
 
 while True:
     try:
         dados_crus, addr_origem = sock.recvfrom(65535)
         print(f"\033[94m[ROTEADOR] Quadro recebido de {addr_origem}\033[0m")
 
-        # ── Camada 2: Deserializar e verificar CRC ──────────────────
         quadro_dict, integro = Quadro.deserializar(dados_crus)
 
         if not integro or quadro_dict is None:
@@ -40,7 +37,6 @@ while True:
 
         print(f"\033[92m[ROTEADOR][ENLACE] ✓ CRC válido. src_mac={quadro_dict['src_mac']} dst_mac={quadro_dict['dst_mac']}\033[0m")
 
-        # ── Camada 3: Extrair Pacote ─────────────────────────────────
         pacote_dict = quadro_dict["data"]
         src_vip = pacote_dict["src_vip"]
         dst_vip = pacote_dict["dst_vip"]
@@ -48,24 +44,30 @@ while True:
 
         print(f"\033[94m[ROTEADOR][REDE] Pacote: src_vip={src_vip} dst_vip={dst_vip} TTL={ttl}\033[0m")
 
-        # Verificar TTL
+        # Aprende endereço real do remetente (ARP dinâmico)
+        if src_vip not in TABELA_ROTEAMENTO:
+            tabela_arp[src_vip] = addr_origem
+            print(f"\033[94m[ROTEADOR][ARP] Aprendi: {src_vip} → {addr_origem}\033[0m")
+
         if ttl <= 0:
             print("\033[91m[ROTEADOR][REDE] ✗ TTL expirado! Pacote descartado.\033[0m")
             continue
 
-        # Decrementar TTL
         pacote_dict["ttl"] = ttl - 1
         print(f"\033[94m[ROTEADOR][REDE] TTL decrementado para {pacote_dict['ttl']}\033[0m")
 
-        # Consultar tabela de roteamento
-        if dst_vip not in TABELA_ROTEAMENTO:
-            print(f"\033[91m[ROTEADOR][REDE] ✗ Destino '{dst_vip}' não encontrado na tabela. Descartando.\033[0m")
+        # Roteamento: tabela estática primeiro, depois ARP dinâmica
+        if dst_vip in TABELA_ROTEAMENTO:
+            destino_real = TABELA_ROTEAMENTO[dst_vip]
+        elif dst_vip in tabela_arp:
+            destino_real = tabela_arp[dst_vip]
+            print(f"\033[94m[ROTEADOR][ARP] Rota dinâmica: {dst_vip} → {destino_real}\033[0m")
+        else:
+            print(f"\033[91m[ROTEADOR][REDE] ✗ Destino '{dst_vip}' não encontrado. Descartando.\033[0m")
             continue
 
-        destino_real = TABELA_ROTEAMENTO[dst_vip]
         print(f"\033[94m[ROTEADOR][REDE] → Encaminhando para {destino_real}\033[0m")
 
-        # ── Camada 2: Re-encapsular em novo Quadro ───────────────────
         novo_quadro = Quadro(
             src_mac="MAC_ROUTER",
             dst_mac=f"MAC_{dst_vip}",
@@ -73,7 +75,6 @@ while True:
         )
         bytes_quadro = novo_quadro.serializar()
 
-        # ── Camada 1: Enviar pelo canal ruidoso ──────────────────────
         enviar_pela_rede_ruidosa(sock, bytes_quadro, destino_real)
         print(f"\033[92m[ROTEADOR] ✓ Pacote encaminhado para {destino_real}\033[0m\n")
 
