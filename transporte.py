@@ -9,7 +9,7 @@ import json
 import time
 from protocol import enviar_pela_rede_ruidosa, Segmento, Pacote, Quadro
 
-TIMEOUT = 2  # segundos para retransmissão
+TIMEOUT = 0.5  # segundos para retransmissão
 
 class Transporte:
 
